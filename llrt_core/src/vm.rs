@@ -166,6 +166,34 @@ impl Vm {
         self.run(source, strict, global).await;
     }
 
+    pub async fn run_bytecode(&self, bytecode: Vec<u8>) {
+        self.run_with(|ctx| {
+            // Load the bytecode directly using the context
+            let module_name = "main";
+            
+            // First, try to execute it as a module
+            match crate::modules::require::load_bytecode_as_module(ctx, module_name, &bytecode) {
+                Ok(module) => {
+                    // Execute the module
+                    let _ = module.eval()?;
+                    Ok(())
+                },
+                Err(_) => {
+                    // If that fails, try to execute it as a script with global scope
+                    // to ensure console.log works
+                    let source = String::from_utf8_lossy(&bytecode).to_string();
+                    let mut options = EvalOptions::default();
+                    options.strict = true;
+                    options.promise = true;
+                    options.global = true;
+                    let _ = ctx.eval_with_options::<Value, _>(source, options)?;
+                    Ok(())
+                }
+            }
+        })
+        .await;
+    }
+
     pub async fn idle(self) -> StdResult<(), Box<dyn std::error::Error + Sync + Send>> {
         self.runtime.idle().await;
         Ok(())

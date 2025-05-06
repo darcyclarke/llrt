@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
     process::exit,
     time::Instant,
+    fs,
 };
 
 mod core;
@@ -49,6 +50,47 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     MinimalTracer::register()?;
     trace!("Started runtime");
 
+    // Check if this is a self-contained executable
+    let executable_path = env::current_exe().unwrap_or_else(|_| PathBuf::from(env::args().next().unwrap_or_default()));
+    let executable_filename = executable_path.file_name().unwrap_or_default().to_string_lossy();
+    
+    // Only check for embedded bytecode if we're not running the llrt binary itself
+    if !executable_filename.starts_with("llrt") {
+        // Try to read the executable file to check for embedded bytecode
+        if let Ok(executable_content) = fs::read(&executable_path) {
+            // Look for the LLRT_EXE marker at the end of the file
+            let marker = b"LLRT_EXE";
+            if executable_content.len() > marker.len() + 8 {
+                let marker_pos = executable_content.len() - marker.len();
+                let tail = &executable_content[marker_pos..];
+                
+                if tail == marker {
+                    // Read the bytecode size (8 bytes before marker)
+                    let size_start = marker_pos - 8;
+                    let size_bytes = &executable_content[size_start..marker_pos];
+                    let bytecode_size = u64::from_le_bytes([
+                        size_bytes[0], size_bytes[1], size_bytes[2], size_bytes[3],
+                        size_bytes[4], size_bytes[5], size_bytes[6], size_bytes[7],
+                    ]) as usize;
+                    
+                    // Find where the runtime ends and the bytecode begins
+                    let bytecode_start = executable_content.len() - (bytecode_size + 8 + marker.len());
+                    
+                    // Extract the bytecode
+                    let bytecode = &executable_content[bytecode_start..bytecode_start + bytecode_size];
+                    
+                    let vm = Vm::new().await?;
+                    trace!("Initialized VM in {}ms", now.elapsed().as_millis());
+                    
+                    // Run the bytecode directly
+                    vm.run_bytecode(bytecode.to_vec()).await;
+                    vm.idle().await?;
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     let vm = Vm::new().await?;
     trace!("Initialized VM in {}ms", now.elapsed().as_millis());
 
@@ -79,7 +121,7 @@ Usage:
   llrt -v | --version
   llrt -h | --help
   llrt -e | --eval <source>
-  llrt compile input.js [output.lrt]
+  llrt compile input.js [output.lrt] [--executable]
   llrt test <test_args>
 
 Options:
@@ -90,6 +132,8 @@ Options:
                       if [output.lrt] is omitted, <input>.lrt is used.
                       lrt file is expected to be executed by the llrt version
                       that created it
+                      --executable    Create a self-contained executable that includes
+                                    the LLRT runtime
   test              Run tests with provided arguments:
                       <test_args> -d <directory> <test-filter>
 "#
@@ -139,16 +183,25 @@ async fn start_cli(vm: &Vm) {
                         {
                             if let Some(filename) = args.get(i + 1) {
                                 let output_filename = if let Some(arg) = args.get(i + 2) {
-                                    arg.to_string()
+                                    if arg == "--executable" {
+                                        let mut buf = PathBuf::from(filename);
+                                        buf.set_extension("");
+                                        buf.to_string_lossy().to_string()
+                                    } else {
+                                        arg.to_string()
+                                    }
                                 } else {
                                     let mut buf = PathBuf::from(filename);
                                     buf.set_extension("lrt");
                                     buf.to_string_lossy().to_string()
                                 };
 
+                                let create_executable = args.get(i + 2).map_or(false, |arg| arg == "--executable") 
+                                    || args.get(i + 3).map_or(false, |arg| arg == "--executable");
+
                                 let filename = Path::new(filename);
                                 let output_filename = Path::new(&output_filename);
-                                if let Err(error) = compile_file(filename, output_filename).await {
+                                if let Err(error) = compile_file(filename, output_filename, create_executable).await {
                                     eprintln!("{error}");
                                     exit(1);
                                 }

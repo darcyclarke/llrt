@@ -41,7 +41,7 @@ impl CustomLoader {
         Ok((uncompressed_size, rest))
     }
 
-    fn get_module_bytecode(input: &[u8]) -> Result<Vec<u8>> {
+    pub fn get_module_bytecode(input: &[u8]) -> Result<Vec<u8>> {
         let (_, compressed, input) = Self::get_bytecode_signature(input)?;
 
         if compressed {
@@ -132,7 +132,7 @@ impl CustomLoader {
 
     fn normalize_name(name: &str) -> (bool, bool, &str, &str) {
         if !name.starts_with("__") {
-            // If name doesn’t start with "__", return defaults
+            // If name doesn't start with "__", return defaults
             return (false, false, name, name);
         }
 

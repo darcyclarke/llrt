@@ -23,6 +23,7 @@ fn compress_module(bytes: &[u8]) -> io::Result<Vec<u8>> {
 pub async fn compile_file(
     input_filename: &Path,
     output_filename: &Path,
+    create_executable: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let resolver = (DummyResolver,);
     let loader = (DummyLoader,);
@@ -53,7 +54,66 @@ pub async fn compile_file(
             let module = Module::declare(ctx.clone(), module_name, source)?;
             let bytes = module.write(WriteOptions::default())?;
             let compressed = compress_module(&bytes)?;
-            fs::write(output_filename, &compressed)?;
+            
+            if create_executable {
+                // Create a self-contained executable
+                let exe_path = if output_filename.extension().unwrap_or_default() == "lrt" {
+                    output_filename.with_extension("")
+                } else {
+                    output_filename.to_path_buf()
+                };
+                
+                // Look for the runtime binary in various locations
+                let runtime_path = std::env::var("LLRT_RUNTIME_PATH")
+                    .map(|p| std::path::PathBuf::from(p))
+                    .unwrap_or_else(|_| {
+                        // Try the executable's path
+                        std::env::current_exe()
+                            .unwrap_or_else(|_| std::path::PathBuf::from("llrt"))
+                    });
+                
+                trace!("Using runtime binary from: {}", runtime_path.display());
+                
+                if runtime_path.exists() && runtime_path.metadata()?.len() > 0 {
+                    // Create the executable by prepending the LLRT runtime to the bytecode
+                    // And appending a simple footer with a magic number and size
+                    let mut exe_content = Vec::new();
+                    
+                    // Read the LLRT runtime binary
+                    let runtime_binary = fs::read(&runtime_path)?;
+                    exe_content.extend_from_slice(&runtime_binary);
+                    
+                    // Add the bytecode
+                    exe_content.extend_from_slice(&compressed);
+                    
+                    // Add a footer at the end with size and magic number
+                    let bytecode_size = compressed.len() as u64;
+                    exe_content.extend_from_slice(&bytecode_size.to_le_bytes());
+                    exe_content.extend_from_slice(b"LLRT_EXE");
+                    
+                    // Write the executable
+                    fs::write(&exe_path, exe_content)?;
+                    
+                    // Set executable permissions on Unix systems
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let mut perms = fs::metadata(&exe_path)?.permissions();
+                        perms.set_mode(0o755);
+                        fs::set_permissions(&exe_path, perms)?;
+                    }
+                    
+                    trace!("Created self-contained executable: {}", exe_path.display());
+                } else {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("LLRT runtime binary not found or empty at path: {}. Set LLRT_RUNTIME_PATH environment variable to point to the LLRT binary.", runtime_path.display()),
+                    )
+                    .into());
+                }
+            } else {
+                fs::write(output_filename, &compressed)?;
+            }
 
             total_bytes += bytes.len();
             compressed_bytes += compressed.len();
