@@ -1,6 +1,6 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
-use std::{io, result::Result as StdResult};
+use std::{env, fs, io, result::Result as StdResult};
 
 use once_cell::sync::Lazy;
 use rquickjs::{loader::Loader, Ctx, Error, Module, Object, Result};
@@ -52,7 +52,7 @@ impl EmbeddedLoader {
         Ok(input.to_vec())
     }
 
-    fn get_bytecode_signature(input: &[u8]) -> StdResult<(&[u8], bool, &[u8]), io::Error> {
+    pub fn get_bytecode_signature(input: &[u8]) -> StdResult<(&[u8], bool, &[u8]), io::Error> {
         let raw_signature = input
             .get(..SIGNATURE_LENGTH)
             .ok_or(io::Error::new::<String>(
@@ -89,7 +89,7 @@ impl EmbeddedLoader {
 
     fn normalize_name(name: &str) -> (bool, bool, &str, &str) {
         if !name.starts_with("__") {
-            // If name doesn’t start with "__", return defaults
+            // If name doesn't start with "__", return defaults
             return (false, false, name, name);
         }
 
@@ -112,13 +112,16 @@ impl EmbeddedLoader {
 
         let (_, _, normalized_name, path) = Self::normalize_name(name);
 
-        if let Some(bytes) = BYTECODE_CACHE.get(path) {
-            #[cfg(feature = "lambda")]
-            init_client_connection(&ctx, path)?;
+        // Try to find in bytecode cache
+        if let Ok(cache) = BYTECODE_CACHE.read() {
+            if let Some(bytes) = cache.get(path) {
+                #[cfg(feature = "lambda")]
+                init_client_connection(&ctx, path)?;
 
-            trace!("Loading embedded module: {}\n", path);
+                trace!("Loading embedded module: {}\n", path);
 
-            return Ok((Self::load_bytecode_module(ctx, bytes)?, Some(path.into())));
+                return Ok((Self::load_bytecode_module(ctx, bytes)?, Some(path.into())));
+            }
         }
 
         let bytes = std::fs::read(path)?;
@@ -143,6 +146,80 @@ impl Loader for EmbeddedLoader {
 
         Ok(module)
     }
+}
+
+/// Load embedded bytecode from self-contained executables
+#[cfg(not(feature = "lambda"))]
+pub fn load_embedded_executable_bytecode() -> StdResult<(), io::Error> {
+    use std::path::PathBuf;
+
+    let executable_path = env::current_exe()
+        .unwrap_or_else(|_| PathBuf::from(env::args().next().unwrap_or_default()));
+
+    trace!(
+        "Checking if {} is a self-contained executable",
+        executable_path.display()
+    );
+
+    // Read the last 4 bytes to check for signature
+    if let Ok(exe_content) = fs::read(&executable_path) {
+        const MARKER: &[u8] = b"LLRT_EXE";
+        
+        if exe_content.len() > MARKER.len() + 8 {
+            let marker_pos = exe_content.len() - MARKER.len();
+            
+            if &exe_content[marker_pos..] == MARKER {
+                trace!("Found LLRT_EXE marker at position {}", marker_pos);
+
+                // Read the bytecode size (8 bytes before marker)
+                let size_start = marker_pos - 8;
+                let size_bytes = &exe_content[size_start..marker_pos];
+                let bytecode_size = u64::from_le_bytes([
+                    size_bytes[0],
+                    size_bytes[1],
+                    size_bytes[2],
+                    size_bytes[3],
+                    size_bytes[4],
+                    size_bytes[5],
+                    size_bytes[6],
+                    size_bytes[7],
+                ]) as usize;
+
+                trace!("Bytecode size from footer: {} bytes", bytecode_size);
+
+                // Validate the size
+                if bytecode_size > 0 && bytecode_size < exe_content.len() {
+                    let bytecode_start = marker_pos - 8 - bytecode_size;
+                    trace!("Bytecode starts at offset {}", bytecode_start);
+
+                    // Extract the compressed bytecode
+                    let compressed_bytecode = &exe_content[bytecode_start..bytecode_start + bytecode_size];
+                    
+                    // Decompress the bytecode
+                    match EmbeddedLoader::get_module_bytecode(compressed_bytecode) {
+                        Ok(bytecode) => {
+                            trace!("Successfully decompressed bytecode");
+                            
+                            // Store in the global bytecode cache with "main" as the key
+                            if let Ok(mut cache) = BYTECODE_CACHE.write() {
+                                // Add both with and without extension for compatibility
+                                cache.insert("main".to_string(), bytecode.clone());
+                                cache.insert("main.js".to_string(), bytecode);
+                                trace!("Added embedded bytecode to cache as 'main'");
+                                return Ok(());
+                            }
+                        }
+                        Err(e) => {
+                            trace!("Failed to decompress bytecode: {:?}", e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Not a self-contained executable or failed to load
+    Ok(())
 }
 
 #[cfg(feature = "lambda")]

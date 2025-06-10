@@ -28,15 +28,17 @@ pub fn embedded_resolve<'a>(x: &'a str, y: &str) -> Result<Cow<'a, str>> {
     trace!("embedded_resolve(x, y):({}, {})", x, y);
 
     // If X is a bytecode cache,
-    if BYTECODE_CACHE.contains_key(x) {
-        trace!("+- Resolved by `BYTECODE_CACHE`: {}", x);
-        return Ok(x.into());
-    }
+    if let Ok(cache) = BYTECODE_CACHE.read() {
+        if cache.contains_key(x) {
+            trace!("+- Resolved by `BYTECODE_CACHE`: {}", x);
+            return Ok(x.into());
+        }
 
-    let x_normalized = path::normalize(x);
-    if BYTECODE_CACHE.contains_key(&x_normalized) {
-        trace!("+- Resolved by `BYTECODE_CACHE`: {}", x_normalized);
-        return Ok(x_normalized.into());
+        let x_normalized = path::normalize(x);
+        if cache.contains_key(&x_normalized) {
+            trace!("+- Resolved by `BYTECODE_CACHE`: {}", x_normalized);
+            return Ok(x_normalized.into());
+        }
     }
 
     Err(Error::new_resolving(y.to_string(), x.to_string()))

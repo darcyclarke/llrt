@@ -41,42 +41,6 @@ impl CustomLoader {
     }
 
     pub fn get_module_bytecode(input: &[u8]) -> Result<Vec<u8>> {
-        // Check for LLRT_EXE marker at the end (self-contained executable)
-        let marker = b"LLRT_EXE";
-        if input.len() > marker.len() + 8 {
-            let marker_pos = input.len() - marker.len();
-            if &input[marker_pos..] == marker {
-                trace!("Found LLRT_EXE marker at position {}", marker_pos);
-
-                let size_bytes = &input[marker_pos - 8..marker_pos];
-                let bytecode_size = u64::from_le_bytes([
-                    size_bytes[0],
-                    size_bytes[1],
-                    size_bytes[2],
-                    size_bytes[3],
-                    size_bytes[4],
-                    size_bytes[5],
-                    size_bytes[6],
-                    size_bytes[7],
-                ]) as usize;
-
-                trace!("Bytecode size from footer: {} bytes", bytecode_size);
-
-                if bytecode_size > 0 && bytecode_size < input.len() {
-                    let bytecode_start = marker_pos - 8 - bytecode_size;
-                    trace!("Bytecode starts at offset {}", bytecode_start);
-
-                    let bytecode = &input[bytecode_start..bytecode_start + bytecode_size];
-                    trace!("Checking bytecode signature and format");
-
-                    // Return the raw bytecode for further processing
-                    return Self::extract_bytecode(bytecode);
-                } else {
-                    trace!("Invalid bytecode size: {}", bytecode_size);
-                }
-            }
-        }
-
         // Regular bytecode processing
         Self::extract_bytecode(input)
     }

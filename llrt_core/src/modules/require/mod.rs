@@ -51,36 +51,6 @@ unsafe impl<'js> JsLifetime<'js> for RequireState<'js> {
     type Changed<'to> = RequireState<'to>;
 }
 
-// Include bytecode cache for loading embedded modules
-include!(concat!(env!("OUT_DIR"), "/bytecode_cache.rs"));
-
-/// Load bytecode as a module
-pub fn load_bytecode_as_module<'js>(
-    ctx: &rquickjs::Ctx<'js>,
-    module_name: &str,
-    bytecode: &[u8],
-) -> rquickjs::Result<rquickjs::Module<'js>> {
-    use tracing::trace;
-
-    trace!("Loading bytecode as module: {}", module_name);
-
-    // Attempt to load the bytecode as a module
-    let bytes = loader::CustomLoader::get_module_bytecode(bytecode).map_err(|e| {
-        rquickjs::Error::new_loading(format!("Failed to decompress bytecode: {}", e))
-    })?;
-
-    // Try to load as a module
-    let result = unsafe { rquickjs::Module::load(ctx.clone(), &bytes) };
-
-    // Return the module if successful
-    if result.is_ok() {
-        return result;
-    }
-
-    // If loading as a module fails, return the error
-    result
-}
-
 pub fn require(ctx: Ctx<'_>, specifier: String) -> Result<Value<'_>> {
     let globals = ctx.globals();
     let embedded_fn: Option<Function> = globals.get("__embedded_hook").ok();
@@ -106,7 +76,26 @@ pub fn require(ctx: Ctx<'_>, specifier: String) -> Result<Value<'_>> {
         let specifier = if is_bytecode_or_json {
             specifier
         } else {
-            specifier.trim_start_matches("node:").to_string()
+            let spec = specifier.trim_start_matches("node:").to_string();
+            match embedded_fn {
+                None => spec,
+                Some(ref func) => {
+                    let file = globals.get::<_, Object>("__filename")?;
+                    let file: String = file.get("file")?;
+                    match func.call::<_, Value>((spec, file)) {
+                        Ok(result) => {
+                            if let Some(s) = result.as_string() {
+                                s.to_string()?
+                            } else {
+                                return Err(rquickjs::Exception::throw_type(&ctx, "Cannot load module"));
+                            }
+                        },
+                        _ => {
+                            return Err(rquickjs::Exception::throw_type(&ctx, "Cannot load module"));
+                        },
+                    }
+                },
+            }
         };
 
         if module_list.contains(specifier.as_str()) {

@@ -83,12 +83,12 @@ pub async fn compile_file(
                     trace!("Read runtime binary, size: {} bytes", runtime_binary.len());
                     exe_content.extend_from_slice(&runtime_binary);
 
-                    // Add the bytecode directly without extra headers
-                    trace!("Adding raw bytecode, size: {} bytes", bytes.len());
-                    exe_content.extend_from_slice(&bytes);
+                    // Add the compressed bytecode (already includes headers)
+                    trace!("Adding compressed bytecode, size: {} bytes", compressed.len());
+                    exe_content.extend_from_slice(&compressed);
 
                     // Add a footer at the end with size and magic number
-                    let bytecode_size = bytes.len() as u64;
+                    let bytecode_size = compressed.len() as u64;
                     exe_content.extend_from_slice(&bytecode_size.to_le_bytes());
                     exe_content.extend_from_slice(b"LLRT_EXE");
                     trace!("Total executable size: {} bytes", exe_content.len());

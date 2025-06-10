@@ -222,35 +222,6 @@ impl Vm {
         .await;
     }
 
-    pub async fn run_raw_bytecode(&self, bytecode: Vec<u8>) -> StdResult<(), String> {
-        self.run_with_result(move |ctx| {
-            // Load the raw bytecode directly
-            trace!("Loading raw bytecode of size {} bytes", bytecode.len());
-
-            match unsafe { rquickjs::Module::load(ctx.clone(), &bytecode) } {
-                Ok(module) => {
-                    trace!("Successfully loaded raw bytecode as module");
-                    // Execute the module
-                    match module.eval() {
-                        Ok(_) => {
-                            trace!("Successfully executed module");
-                            Ok(())
-                        },
-                        Err(err) => {
-                            trace!("Failed to evaluate module: {:?}", err);
-                            Err(format!("Error evaluating module: {:?}", err))
-                        },
-                    }
-                },
-                Err(err) => {
-                    trace!("Failed to load raw bytecode as module: {:?}", err);
-                    Err(format!("Error loading bytecode: {:?}", err))
-                },
-            }
-        })
-        .await
-    }
-
     async fn run_with_result<F, T>(&self, f: F) -> StdResult<T, String>
     where
         F: for<'js> FnOnce(&Ctx<'js>) -> StdResult<T, String> + std::marker::Send,
