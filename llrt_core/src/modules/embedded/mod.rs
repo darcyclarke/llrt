@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
-use std::env;
 use std::collections::HashMap;
+use std::env;
 use std::sync::{Arc, RwLock};
 
 use once_cell::sync::Lazy;
@@ -29,12 +29,12 @@ use generated::BYTECODE_CACHE as STATIC_BYTECODE_CACHE;
 // Create a global mutable bytecode cache that starts with the static cache
 pub static BYTECODE_CACHE: Lazy<Arc<RwLock<HashMap<String, Vec<u8>>>>> = Lazy::new(|| {
     let mut cache = HashMap::new();
-    
+
     // Populate with static bytecode cache from build time
     for (key, value) in STATIC_BYTECODE_CACHE.entries() {
         cache.insert(key.to_string(), value.to_vec());
     }
-    
+
     Arc::new(RwLock::new(cache))
 });
 

@@ -87,11 +87,17 @@ pub fn require(ctx: Ctx<'_>, specifier: String) -> Result<Value<'_>> {
                             if let Some(s) = result.as_string() {
                                 s.to_string()?
                             } else {
-                                return Err(rquickjs::Exception::throw_type(&ctx, "Cannot load module"));
+                                return Err(rquickjs::Exception::throw_type(
+                                    &ctx,
+                                    "Cannot load module",
+                                ));
                             }
                         },
                         _ => {
-                            return Err(rquickjs::Exception::throw_type(&ctx, "Cannot load module"));
+                            return Err(rquickjs::Exception::throw_type(
+                                &ctx,
+                                "Cannot load module",
+                            ));
                         },
                     }
                 },

@@ -5,7 +5,7 @@ use std::{env, fs, io, result::Result as StdResult};
 use once_cell::sync::Lazy;
 use rquickjs::{loader::Loader, Ctx, Error, Module, Object, Result};
 use tracing::trace;
-use zstd::{bulk::Decompressor, dict::DecoderDictionary};
+use zstd::bulk::Decompressor;
 
 use crate::bytecode::{
     BYTECODE_COMPRESSED, BYTECODE_FILE_EXT, BYTECODE_UNCOMPRESSED, BYTECODE_VERSION,
@@ -13,9 +13,6 @@ use crate::bytecode::{
 };
 
 use super::{BYTECODE_CACHE, CJS_IMPORT_PREFIX, CJS_LOADER_PREFIX, COMPRESSION_DICT};
-
-static DECOMPRESSOR_DICT: Lazy<DecoderDictionary> =
-    Lazy::new(|| DecoderDictionary::copy(COMPRESSION_DICT));
 
 #[cfg(feature = "lambda")]
 include!(concat!(env!("OUT_DIR"), "/sdk_client_endpoints.rs"));
@@ -43,10 +40,34 @@ impl EmbeddedLoader {
 
         if compressed {
             let (size, input) = Self::uncompressed_size(input)?;
+            trace!(
+                "Decompressing bytecode: compressed_size={}, uncompressed_size={}",
+                input.len(),
+                size
+            );
             let mut buf = Vec::with_capacity(size);
-            let mut decompressor = Decompressor::with_prepared_dictionary(&DECOMPRESSOR_DICT)?;
-            decompressor.decompress_to_buffer(input, &mut buf)?;
-            return Ok(buf);
+
+            // Use the same dictionary method as the require loader for consistency
+            let mut decompressor = Decompressor::with_dictionary(COMPRESSION_DICT)?;
+
+            match decompressor.decompress_to_buffer(input, &mut buf) {
+                Ok(_) => {
+                    trace!(
+                        "Successfully decompressed {} bytes to {} bytes",
+                        input.len(),
+                        buf.len()
+                    );
+                    return Ok(buf);
+                },
+                Err(e) => {
+                    trace!("Decompression failed: {:?}", e);
+                    trace!(
+                        "Input data (first 32 bytes): {:?}",
+                        &input[..std::cmp::min(32, input.len())]
+                    );
+                    return Err(e.into());
+                },
+            }
         }
 
         Ok(input.to_vec())
@@ -62,10 +83,27 @@ impl EmbeddedLoader {
 
         let (last, signature) = raw_signature.split_last().unwrap();
 
+        trace!(
+            "Checking bytecode signature: expected={:?}, got={:?}",
+            BYTECODE_VERSION.as_bytes(),
+            signature
+        );
+        trace!(
+            "Signature bytes: expected={:?}, got={:?}",
+            BYTECODE_VERSION.as_bytes(),
+            signature
+        );
+        trace!("Raw signature bytes: {:?}", raw_signature);
+
         if signature != BYTECODE_VERSION.as_bytes() {
             return Err(io::Error::new::<String>(
                 io::ErrorKind::InvalidInput,
-                "Invalid bytecode version".into(),
+                format!(
+                    "Invalid bytecode version. Expected {:?}, got {:?}",
+                    BYTECODE_VERSION.as_bytes(),
+                    signature
+                )
+                .into(),
             ));
         }
 
@@ -120,7 +158,8 @@ impl EmbeddedLoader {
 
                 trace!("Loading embedded module: {}\n", path);
 
-                return Ok((Self::load_bytecode_module(ctx, bytes)?, Some(path.into())));
+                // Bytecode from cache is already decompressed, so load it directly
+                return Ok((unsafe { Module::load(ctx, bytes)? }, Some(path.into())));
             }
         }
 
@@ -164,10 +203,10 @@ pub fn load_embedded_executable_bytecode() -> StdResult<(), io::Error> {
     // Read the last 4 bytes to check for signature
     if let Ok(exe_content) = fs::read(&executable_path) {
         const MARKER: &[u8] = b"LLRT_EXE";
-        
+
         if exe_content.len() > MARKER.len() + 8 {
             let marker_pos = exe_content.len() - MARKER.len();
-            
+
             if &exe_content[marker_pos..] == MARKER {
                 trace!("Found LLRT_EXE marker at position {}", marker_pos);
 
@@ -193,13 +232,17 @@ pub fn load_embedded_executable_bytecode() -> StdResult<(), io::Error> {
                     trace!("Bytecode starts at offset {}", bytecode_start);
 
                     // Extract the compressed bytecode
-                    let compressed_bytecode = &exe_content[bytecode_start..bytecode_start + bytecode_size];
-                    
+                    let compressed_bytecode =
+                        &exe_content[bytecode_start..bytecode_start + bytecode_size];
+
                     // Decompress the bytecode
                     match EmbeddedLoader::get_module_bytecode(compressed_bytecode) {
                         Ok(bytecode) => {
-                            trace!("Successfully decompressed bytecode");
-                            
+                            trace!(
+                                "Successfully decompressed bytecode, final size: {} bytes",
+                                bytecode.len()
+                            );
+
                             // Store in the global bytecode cache with "main" as the key
                             if let Ok(mut cache) = BYTECODE_CACHE.write() {
                                 // Add both with and without extension for compatibility
@@ -207,11 +250,19 @@ pub fn load_embedded_executable_bytecode() -> StdResult<(), io::Error> {
                                 cache.insert("main.js".to_string(), bytecode);
                                 trace!("Added embedded bytecode to cache as 'main'");
                                 return Ok(());
+                            } else {
+                                trace!("Failed to acquire write lock on bytecode cache");
                             }
-                        }
+                        },
                         Err(e) => {
                             trace!("Failed to decompress bytecode: {:?}", e);
-                        }
+                            trace!("Compressed bytecode size: {}", compressed_bytecode.len());
+                            trace!(
+                                "Compressed bytecode header: {:?}",
+                                &compressed_bytecode
+                                    [..std::cmp::min(16, compressed_bytecode.len())]
+                            );
+                        },
                     }
                 }
             }

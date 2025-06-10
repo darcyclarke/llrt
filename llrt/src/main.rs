@@ -58,12 +58,12 @@ async fn main() -> Result<ExitCode, Box<dyn Error + Send + Sync>> {
     #[cfg(not(feature = "lambda"))]
     {
         use crate::core::modules::embedded::BYTECODE_CACHE;
-        
+
         // Check if 'main' was loaded into the cache
         if let Ok(cache) = BYTECODE_CACHE.read() {
             if cache.contains_key("main") {
                 trace!("Found embedded bytecode in cache, executing as module");
-                
+
                 // Run the main module using the embedded loader path
                 vm.run("import('main')", false, false).await;
                 vm.idle().await?;
